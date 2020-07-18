@@ -31,15 +31,19 @@ logging.basicConfig(format='%(asctime)s\t%(levelname)s\t%(message)s', datefmt='%
 
 # 81マス + 持ち駒 × 2(先後)
 L = 81 + (8 + 4 + 4 + 4 + 4 + 2 + 2) * 2
-# 位置の特徴の数 駒の種類と効きと利き数と空
-E = FEATURES1_NUM + 2
+# 位置ごとの特徴ベクトルの次元 駒の種類と効きと利き数と位置(段と筋)、持ち駒の枚数表現
+FEATURES_NUM = FEATURES1_NUM + 9 + 9 + (8 + 4 + 4 + 4 + 4 + 2 + 2) * 2
+# 埋め込みベクトルの次元
+E = 64
 # 移動を表すラベルの数 座標×移動方向
 MOVE_LABEL_NUM = 81 * 27
 
 class PolicyValueNetwork(nn.Module):
-    def __init__(self, nhead=8, nlayers=2):
+    def __init__(self, nhead=8, nlayers=1):
         super(PolicyValueNetwork, self).__init__()
         from torch.nn import TransformerEncoder, TransformerEncoderLayer, Linear, BatchNorm1d
+        self.embedding = Linear(FEATURES_NUM, E, bias=False)
+        self.embedding_norm = BatchNorm1d(E)
         encoder_layers = TransformerEncoderLayer(E, nhead, E)
         self.transformer_encoder = TransformerEncoder(encoder_layers, nlayers)
         self.norm = BatchNorm1d(L * E)
@@ -49,7 +53,8 @@ class PolicyValueNetwork(nn.Module):
         self.value_fcl2 = Linear(256, 1)
 
     def forward(self, src):
-        h = self.transformer_encoder(src).permute(1, 0, 2)
+        h = self.embedding_norm(self.embedding(src.view(-1, FEATURES_NUM))).view(L, -1, E)
+        h = self.transformer_encoder(h).permute(1, 0, 2)
         h = self.norm(h.reshape(-1, L * E))
         # policy
         h_p = F.relu(self.policy_fcl1(h))
@@ -93,7 +98,7 @@ logging.info('test position num = {}'.format(len(test_data)))
 def mini_batch(hcpevec):
     features1 = np.empty((len(hcpevec), FEATURES1_NUM, 9, 9), dtype=np.float32)
     features2 = np.empty((len(hcpevec), FEATURES2_NUM, 9, 9), dtype=np.float32)
-    features = np.zeros((L, len(hcpevec), E), dtype=np.float32)
+    features = np.zeros((L, len(hcpevec), FEATURES_NUM), dtype=np.float32)
     move = np.empty((len(hcpevec)), dtype=np.int32)
     result = np.empty((len(hcpevec)), dtype=np.float32)
     value = np.empty((len(hcpevec)), dtype=np.float32)
@@ -105,9 +110,14 @@ def mini_batch(hcpevec):
     features1_t = features1.transpose(2, 3, 0, 1).reshape(81, -1, FEATURES1_NUM)
     features[:81,:,:FEATURES1_NUM] = features1_t
 
+    # 位置
+    # 段、筋をワンホットベクトルで表す
+    features[:81,:,FEATURES1_NUM:FEATURES1_NUM + 9 + 9] = np.c_[np.tile(np.eye(9, dtype=np.float32), (1, 9)).reshape((81,9)), np.tile(np.eye(9, dtype=np.float32), (9, 1))].reshape(81, -1, 9 + 9)
+
     # 持ち駒
     features2_t = features2.transpose(1, 0, 2, 3).reshape(FEATURES2_NUM, -1, 81)
-    features[81:] = features2_t[:56,:,:E]
+    #features[81:,:,FEATURES1_NUM:FEATURES1_NUM + 9 + 9] = features2_t[:56,:,:18]
+    features[81:,:,FEATURES1_NUM + 9 + 9:] = features2_t[:56,:,:56] * np.eye(56).reshape((56, 1, 56))
 
     z = result.astype(np.float32) - value + 0.5
 
